@@ -1,221 +1,228 @@
-import customtkinter as ctk
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, ttk, messagebox
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageTk
 from ultralytics import YOLO
 
-# Set modern theme
-ctk.set_appearance_mode("Dark")
-ctk.set_default_color_theme("blue")
-
-class ModernApp(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-
-        # Window Setup
-        self.title("DIP Intelligent System (Assignment 1)")
-        self.geometry("1400x900")
+class ObjectDetectionApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Object Detection & Recognition System (YOLO11)")
+        self.root.geometry("1300x850")
         
-        # Grid Layout (2 Columns: Sidebar, Main Display)
-        self.grid_columnconfigure(1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-
-        # --- AI SETUP ---
-        self.model = None
-        self.original_cv = None
-        self.processed_cv = None
-        self.detections = None
-        self._init_model()
-
-        # --- UI COMPONENTS ---
-        self._setup_sidebar()
-        self._setup_main_area()
-
-    def _init_model(self):
-        print("Loading YOLO11...")
+        # --- 1. SETUP MODEL ---
+        print("Loading YOLO11 model...")
         try:
             self.model = YOLO("yolo11n.pt")
         except Exception as e:
-            print(f"Error: {e}")
+            messagebox.showerror("Error", f"Failed to load YOLO model: {e}")
 
-    def _setup_sidebar(self):
-        # Sidebar Frame
-        self.sidebar = ctk.CTkFrame(self, width=300, corner_radius=0)
-        self.sidebar.grid(row=0, column=0, sticky="nsew")
-        self.sidebar.grid_rowconfigure(9, weight=1) # Spacer at bottom
+        # Variables
+        self.original_cv_image = None
+        self.processed_cv_image = None
+        self.detections = None 
 
-        # Logo / Title
-        logo = ctk.CTkLabel(self.sidebar, text="DIP SYSTEM", font=ctk.CTkFont(size=24, weight="bold"))
-        logo.grid(row=0, column=0, padx=20, pady=(20, 10))
-        
+        # --- 2. GUI LAYOUT ---
+        self._setup_gui()
+
+    def _setup_gui(self):
+        self.root.columnconfigure(1, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        # === LEFT CONTROL PANEL ===
+        control_frame = tk.Frame(self.root, bg="#2c3e50", width=300, padx=15, pady=15)
+        control_frame.grid(row=0, column=0, sticky="ns")
+        control_frame.grid_propagate(False)
+
+        tk.Label(control_frame, text="Control Panel", font=("Arial", 16, "bold"), bg="#2c3e50", fg="white").pack(pady=(0, 15))
+
         # 1. Load Image
-        self.btn_load = ctk.CTkButton(self.sidebar, text="📂 Load Image", command=self.load_image, fg_color="#2ecc71", hover_color="#27ae60")
-        self.btn_load.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-
-        # Separator
-        ctk.CTkLabel(self.sidebar, text="ASSIGNMENT MODULES", text_color="gray").grid(row=2, column=0, pady=(10,0))
-
-        # --- MODULE BUTTONS ---
-        # e. Pattern Recognition (Primary)
-        self.frame_rec = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.frame_rec.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
+        self.btn_style = {"font": ("Arial", 10), "bg": "#ecf0f1", "fg": "#2c3e50", "pady": 2, "width": 25}
+        tk.Button(control_frame, text="1. Load Image", command=self.load_image, **self.btn_style).pack(pady=5)
         
-        ctk.CTkLabel(self.frame_rec, text="(e) Pattern Recog.", font=("Arial", 12, "bold")).pack(anchor="w")
-        self.slider_conf = ctk.CTkSlider(self.frame_rec, from_=10, to=100, number_of_steps=90)
-        self.slider_conf.set(30)
-        self.slider_conf.pack(fill="x", pady=5)
+        ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=10)
+
+        # === ADJUSTABLE OPERATIONS ===
         
-        self.btn_rec = ctk.CTkButton(self.frame_rec, text="▶ Run AI Recognition", command=self.run_recognition, fg_color="#e74c3c", hover_color="#c0392b")
-        self.btn_rec.pack(fill="x")
+        # A. ENHANCEMENT
+        tk.Label(control_frame, text="2. Enhancement (Sharpen)", font=("Arial", 10, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w")
+        self.scale_sharp = tk.Scale(control_frame, from_=0, to=100, orient="horizontal", bg="#2c3e50", fg="white", label="Intensity %")
+        self.scale_sharp.set(50) # Default
+        self.scale_sharp.pack(fill="x")
+        tk.Button(control_frame, text="Apply Sharpen", command=self.apply_enhancement_roi, **self.btn_style).pack(pady=5)
 
-        # Other Modules
-        self.btn_enhance = ctk.CTkButton(self.sidebar, text="(a) Enhancement (Sharpen)", command=self.run_enhance)
-        self.btn_enhance.grid(row=4, column=0, padx=20, pady=5, sticky="ew")
+        ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=10)
 
-        self.btn_color = ctk.CTkButton(self.sidebar, text="(b) Color (Saturation)", command=self.run_color)
-        self.btn_color.grid(row=5, column=0, padx=20, pady=5, sticky="ew")
+        # B. COLOR PROCESS
+        tk.Label(control_frame, text="3. Color Process (Saturation)", font=("Arial", 10, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w")
+        self.scale_color = tk.Scale(control_frame, from_=0, to=100, orient="horizontal", bg="#2c3e50", fg="white", label="Add Saturation")
+        self.scale_color.set(40) # Default
+        self.scale_color.pack(fill="x")
+        tk.Button(control_frame, text="Apply Color", command=self.apply_color_roi, **self.btn_style).pack(pady=5)
 
-        self.btn_seg = ctk.CTkButton(self.sidebar, text="(c) Segmentation (Thresh)", command=self.run_segmentation)
-        self.btn_seg.grid(row=6, column=0, padx=20, pady=5, sticky="ew")
+        ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=10)
 
-        self.btn_feat = ctk.CTkButton(self.sidebar, text="(d) Feature Ext. (Edges)", command=self.run_features)
-        self.btn_feat.grid(row=7, column=0, padx=20, pady=5, sticky="ew")
+        # C. SEGMENTATION
+        tk.Label(control_frame, text="4. Segmentation (Threshold)", font=("Arial", 10, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w")
+        self.scale_thresh = tk.Scale(control_frame, from_=0, to=255, orient="horizontal", bg="#2c3e50", fg="white", label="Threshold Value")
+        self.scale_thresh.set(127) # Default
+        self.scale_thresh.pack(fill="x")
+        tk.Button(control_frame, text="Apply Segmentation", command=self.apply_segmentation_roi, **self.btn_style).pack(pady=5)
 
+        ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=10)
+
+        # D. DETECTION SETTINGS
+        tk.Label(control_frame, text="AI Settings", font=("Arial", 10, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w")
+        self.scale_conf = tk.Scale(control_frame, from_=10, to=100, orient="horizontal", bg="#2c3e50", fg="white", label="Confidence %")
+        self.scale_conf.set(25) # Default 25%
+        self.scale_conf.pack(fill="x")
+        tk.Button(control_frame, text="Re-Detect Objects", command=self.force_redetect, bg="#e74c3c", fg="white", font=("Arial", 10, "bold"), pady=5, width=25).pack(pady=5)
+        
         # Reset
-        self.btn_reset = ctk.CTkButton(self.sidebar, text="↺ Reset Image", command=self.reset_image, fg_color="gray", hover_color="#555")
-        self.btn_reset.grid(row=8, column=0, padx=20, pady=20, sticky="ew")
+        tk.Button(control_frame, text="Reset Image", command=self.reset_image, bg="#95a5a6", fg="white", width=25).pack(side="bottom", pady=20)
 
-    def _setup_main_area(self):
-        # Dashboard Frame
-        self.main_frame = ctk.CTkFrame(self, corner_radius=10)
-        self.main_frame.grid(row=0, column=1, padx=20, pady=20, sticky="nsew")
-        self.main_frame.grid_columnconfigure(0, weight=1)
-        self.main_frame.grid_rowconfigure(1, weight=1)
+        # === RIGHT DISPLAY AREA ===
+        display_frame = tk.Frame(self.root, bg="#ecf0f1")
+        display_frame.grid(row=0, column=1, sticky="nsew")
+        
+        self.lbl_image = tk.Label(display_frame, text="No Image Loaded", bg="#bdc3c7", fg="#7f8c8d", font=("Arial", 20))
+        self.lbl_image.place(relx=0.5, rely=0.5, anchor="center")
+        
+        self.lbl_status = tk.Label(display_frame, text="System Ready", bg="#34495e", fg="white", anchor="w", padx=10)
+        self.lbl_status.pack(side="bottom", fill="x")
 
-        # Status Bar (Top)
-        self.status_label = ctk.CTkLabel(self.main_frame, text="Status: Ready", font=("Consolas", 14), anchor="w")
-        self.status_label.grid(row=0, column=0, padx=20, pady=(10,0), sticky="ew")
-
-        # Image Display Area
-        self.image_label = ctk.CTkLabel(self.main_frame, text="[ No Image Loaded ]", font=("Arial", 20), text_color="gray")
-        self.image_label.grid(row=1, column=0, padx=10, pady=10)
-
-    # --- LOGIC ---
+    # --- FUNCTIONS ---
 
     def load_image(self):
-        path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.png *.jpeg *.webp")])
+        path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.png *.jpeg")])
         if path:
-            self.original_cv = cv2.imread(path)
-            if self.original_cv is None: return
-            self.reset_image()
-            self.status_label.configure(text=f"Loaded: {path.split('/')[-1]}")
+            self.original_cv_image = cv2.imread(path)
+            self.processed_cv_image = self.original_cv_image.copy()
+            self.detections = None 
+            self.show_image(self.original_cv_image)
+            self.lbl_status.config(text=f"Loaded: {path}")
 
-    def ensure_ai(self):
-        if self.original_cv is None:
-            messagebox.showwarning("Warning", "Load an image first!")
-            return False
+    def ensure_detections(self):
+        """Run YOLO if detections are missing or if we need to update confidence."""
         if self.detections is None:
-            self.run_recognition()
-        return self.detections is not None
+            self.force_redetect()
+            if len(self.detections) == 0:
+                return False
+        return True
 
-    # (e) Pattern Recognition
-    def run_recognition(self):
-        if self.original_cv is None: return
-        conf = self.slider_conf.get() / 100.0
+    def force_redetect(self):
+        """Manually runs YOLO with the selected confidence slider."""
+        if self.original_cv_image is None: return
         
-        self.status_label.configure(text=f"AI Thinking (Conf: {conf})...")
-        self.update()
+        conf_val = self.scale_conf.get() / 100.0  # Convert 0-100 to 0.0-1.0
         
-        res = self.model(self.original_cv, conf=conf)
-        self.detections = res[0].boxes
+        self.lbl_status.config(text=f"Detecting objects (Conf: {conf_val})...")
+        self.root.update()
         
-        self.processed_cv = res[0].plot()
-        self.display_image(self.processed_cv)
-        self.status_label.configure(text=f"Pattern Recognition: Found {len(self.detections)} objects")
+        results = self.model(self.original_cv_image, conf=conf_val)
+        self.detections = results[0].boxes
+        
+        # Show the raw detections immediately
+        res_plotted = results[0].plot()
+        self.processed_cv_image = res_plotted
+        self.show_image(self.processed_cv_image)
+        self.lbl_status.config(text=f"Detection Complete: {len(self.detections)} objects found.")
 
-    # (a) Enhancement
-    def run_enhance(self):
-        if not self.ensure_ai(): return
-        img = self.original_cv.copy()
-        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]]) # Sharpen
+    def apply_enhancement_roi(self):
+        """Blends sharpened image with original based on slider."""
+        if self.original_cv_image is None or not self.ensure_detections(): return
+        
+        temp_img = self.original_cv_image.copy()
+        intensity = self.scale_sharp.get() / 100.0 # 0.0 to 1.0
         
         for box in self.detections:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            roi = img[y1:y2, x1:x2]
-            img[y1:y2, x1:x2] = cv2.filter2D(roi, -1, kernel)
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            roi = temp_img[y1:y2, x1:x2]
             
-        self.display_image(img)
-        self.status_label.configure(text="Applied: Image Sharpening")
+            # Create sharpened version
+            kernel = np.array([[0, -1, 0], [-1, 5,-1], [0, -1, 0]])
+            sharpened = cv2.filter2D(roi, -1, kernel)
+            
+            # Blend: output = (1-alpha)*original + alpha*sharpened
+            blended = cv2.addWeighted(roi, 1.0 - intensity, sharpened, intensity, 0)
+            
+            # Draw green box
+            cv2.rectangle(temp_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            temp_img[y1:y2, x1:x2] = blended
+            
+        self.processed_cv_image = temp_img
+        self.show_image(self.processed_cv_image)
+        self.lbl_status.config(text=f"Applied: Sharpening (Intensity: {int(intensity*100)}%)")
 
-    # (b) Color Processing
-    def run_color(self):
-        if not self.ensure_ai(): return
-        img = self.original_cv.copy()
+    def apply_color_roi(self):
+        """Boosts saturation by slider amount."""
+        if self.original_cv_image is None or not self.ensure_detections(): return
+        
+        temp_img = self.original_cv_image.copy()
+        sat_boost = self.scale_color.get()
         
         for box in self.detections:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            roi = img[y1:y2, x1:x2]
+            roi = temp_img[y1:y2, x1:x2]
+            
             hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
             h, s, v = cv2.split(hsv)
-            s = cv2.add(s, 50) # Add Saturation
-            img[y1:y2, x1:x2] = cv2.cvtColor(cv2.merge((h,s,v)), cv2.COLOR_HSV2BGR)
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            
+            # Add saturation with clipping to 255
+            s = cv2.add(s, sat_boost)
+            
+            final_hsv = cv2.merge((h, s, v))
+            processed_roi = cv2.cvtColor(final_hsv, cv2.COLOR_HSV2BGR)
+            
+            cv2.rectangle(temp_img, (x1, y1), (x2, y2), (0, 255, 255), 2)
+            temp_img[y1:y2, x1:x2] = processed_roi
 
-        self.display_image(img)
-        self.status_label.configure(text="Applied: Color Saturation Boost")
+        self.processed_cv_image = temp_img
+        self.show_image(self.processed_cv_image)
+        self.lbl_status.config(text=f"Applied: Color Saturation (+{sat_boost})")
 
-    # (c) Segmentation
-    def run_segmentation(self):
-        if not self.ensure_ai(): return
-        img = self.original_cv.copy()
+    def apply_segmentation_roi(self):
+        """Manual Thresholding based on slider."""
+        if self.original_cv_image is None or not self.ensure_detections(): return
+        
+        temp_img = self.original_cv_image.copy()
+        thresh_val = self.scale_thresh.get()
         
         for box in self.detections:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
-            roi = img[y1:y2, x1:x2]
-            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            _, mask = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
-            img[y1:y2, x1:x2] = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-            cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            roi = temp_img[y1:y2, x1:x2]
+            
+            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            
+            # Manual Binary Thresholding using slider value
+            _, mask = cv2.threshold(gray_roi, thresh_val, 255, cv2.THRESH_BINARY)
+            
+            mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            cv2.rectangle(temp_img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+            temp_img[y1:y2, x1:x2] = mask_bgr
 
-        self.display_image(img)
-        self.status_label.configure(text="Applied: Binary Segmentation")
-
-    # (d) Feature Extraction
-    def run_features(self):
-        if not self.ensure_ai(): return
-        img = self.original_cv.copy()
-        
-        for box in self.detections:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            roi = img[y1:y2, x1:x2]
-            edges = cv2.Canny(roi, 100, 200)
-            img[y1:y2, x1:x2] = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-            cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), 2)
-
-        self.display_image(img)
-        self.status_label.configure(text="Applied: Canny Edge Features")
+        self.processed_cv_image = temp_img
+        self.show_image(self.processed_cv_image)
+        self.lbl_status.config(text=f"Applied: Manual Threshold (Value: {thresh_val})")
 
     def reset_image(self):
-        if self.original_cv is not None:
+        if self.original_cv_image is not None:
+            self.processed_cv_image = self.original_cv_image.copy()
+            self.show_image(self.processed_cv_image)
             self.detections = None
-            self.display_image(self.original_cv)
-            self.status_label.configure(text="Image Reset")
+            self.lbl_status.config(text="Image Reset")
 
-    def display_image(self, cv_img):
-        # Convert to RGB for Pillow
-        rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(rgb)
-        
-        # Calculate aspect ratio
-        w, h = 900, 700
-        # FIXED: Use ctk.CTkImage instead of importing it from PIL
-        ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(w, h))
-        
-        self.image_label.configure(image=ctk_img, text="")
+    def show_image(self, cv_img):
+        rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        im_pil = Image.fromarray(rgb_img)
+        display_w, display_h = 900, 700
+        im_pil.thumbnail((display_w, display_h))
+        imgtk = ImageTk.PhotoImage(image=im_pil)
+        self.lbl_image.configure(image=imgtk, text="")
+        self.lbl_image.image = imgtk
 
 if __name__ == "__main__":
-    app = ModernApp()
-    app.mainloop()
+    root = tk.Tk()
+    app = ObjectDetectionApp(root)
+    root.mainloop()
