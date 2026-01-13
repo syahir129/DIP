@@ -4,26 +4,27 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 from ultralytics import YOLO
+import random
 
 class ObjectDetectionApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Object Detection & Recognition System (YOLO11)")
-        self.root.geometry("1300x850")
+        self.root.title("YOLO11 Instance Segmentation (Exact Shape Detection)")
+        self.root.geometry("1500x950")
         
-        # --- 1. SETUP MODEL ---
-        print("Loading YOLO11 model...")
+        # --- 1. SETUP SEGMENTATION MODEL ---
+        print("Loading YOLO11 Segmentation model...")
         try:
-            self.model = YOLO("yolo11n.pt")
+            # CHANGED: 'seg' model provides masks (shapes) instead of just boxes
+            self.model = YOLO("yolo11n-seg.pt") 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load YOLO model: {e}")
 
-        # Variables
         self.original_cv_image = None
-        self.processed_cv_image = None
-        self.detections = None 
+        self.current_results = None 
+        self.cap = None
+        self.is_camera_on = False
 
-        # --- 2. GUI LAYOUT ---
         self._setup_gui()
 
     def _setup_gui(self):
@@ -31,196 +32,212 @@ class ObjectDetectionApp:
         self.root.rowconfigure(0, weight=1)
 
         # === LEFT CONTROL PANEL ===
-        control_frame = tk.Frame(self.root, bg="#2c3e50", width=300, padx=15, pady=15)
+        control_frame = tk.Frame(self.root, bg="#2c3e50", width=400, padx=15, pady=15)
         control_frame.grid(row=0, column=0, sticky="ns")
         control_frame.grid_propagate(False)
 
-        tk.Label(control_frame, text="Control Panel", font=("Arial", 16, "bold"), bg="#2c3e50", fg="white").pack(pady=(0, 15))
+        tk.Label(control_frame, text="DIP Control Panel", font=("Arial", 16, "bold"), bg="#2c3e50", fg="white").pack(pady=(0, 15))
 
-        # 1. Load Image
-        self.btn_style = {"font": ("Arial", 10), "bg": "#ecf0f1", "fg": "#2c3e50", "pady": 2, "width": 25}
-        tk.Button(control_frame, text="1. Load Image", command=self.load_image, **self.btn_style).pack(pady=5)
+        # Media Inputs
+        self.btn_style = {"font": ("Arial", 9), "bg": "#ecf0f1", "fg": "#2c3e50", "pady": 2, "width": 35}
+        tk.Button(control_frame, text="📁 Load Image", command=self.load_image, **self.btn_style).pack(pady=2)
+        self.btn_camera = tk.Button(control_frame, text="📷 Open Camera", command=self.toggle_camera, bg="#2ecc71", fg="white", font=("Arial", 9, "bold"), width=35)
+        self.btn_camera.pack(pady=2)
         
         ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=10)
 
-        # === ADJUSTABLE OPERATIONS ===
-        
-        # A. ENHANCEMENT
-        tk.Label(control_frame, text="2. Enhancement (Sharpen)", font=("Arial", 10, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w")
-        self.scale_sharp = tk.Scale(control_frame, from_=0, to=100, orient="horizontal", bg="#2c3e50", fg="white", label="Intensity %")
-        self.scale_sharp.set(50) # Default
-        self.scale_sharp.pack(fill="x")
-        tk.Button(control_frame, text="Apply Sharpen", command=self.apply_enhancement_roi, **self.btn_style).pack(pady=5)
+        # --- A. ENHANCEMENT ---
+        tk.Label(control_frame, text="a. Enhancement (Ch 3-5)", font=("Arial", 9, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w", pady=(5, 0))
+        self.enhance_mode = tk.StringVar(value="Sharpening")
+        self.combo_enhance = ttk.Combobox(control_frame, textvariable=self.enhance_mode, state="readonly", width=33)
+        self.combo_enhance['values'] = ("Sharpening", "Histogram Equalization", "Gamma Correction")
+        self.combo_enhance.pack(pady=2)
+        self.scale_enhance = tk.Scale(control_frame, from_=0, to=100, orient="horizontal", bg="#2c3e50", fg="white", length=300, label="Intensity")
+        self.scale_enhance.set(50)
+        self.scale_enhance.pack()
+        tk.Button(control_frame, text="Apply Enhancement", command=self.apply_enhancement, **self.btn_style).pack(pady=(0, 5))
 
-        ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=10)
+        # --- B. COLOUR (SHAPE FILL) ---
+        tk.Label(control_frame, text="b. Colour (Fill Exact Shape)", font=("Arial", 9, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w", pady=(5, 0))
+        self.scale_color = tk.Scale(control_frame, from_=0, to=100, orient="horizontal", bg="#2c3e50", fg="white", length=300, label="Opacity %")
+        self.scale_color.set(50)
+        self.scale_color.pack()
+        tk.Button(control_frame, text="Apply Random Color Fill", command=self.apply_shape_color, **self.btn_style).pack(pady=(0, 5))
 
-        # B. COLOR PROCESS
-        tk.Label(control_frame, text="3. Color Process (Saturation)", font=("Arial", 10, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w")
-        self.scale_color = tk.Scale(control_frame, from_=0, to=100, orient="horizontal", bg="#2c3e50", fg="white", label="Add Saturation")
-        self.scale_color.set(40) # Default
-        self.scale_color.pack(fill="x")
-        tk.Button(control_frame, text="Apply Color", command=self.apply_color_roi, **self.btn_style).pack(pady=5)
+        # --- C. SEGMENTATION DISPLAY ---
+        tk.Label(control_frame, text="c. Segmentation Mask", font=("Arial", 9, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w", pady=(5, 0))
+        tk.Button(control_frame, text="Isolate Masks (Black BG)", command=self.apply_mask_isolation, **self.btn_style).pack(pady=2)
 
-        ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=10)
+        # --- D. FEATURE EXTRACTION ---
+        tk.Label(control_frame, text="d. Feature Extraction", font=("Arial", 9, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w", pady=(5, 0))
+        tk.Button(control_frame, text="Draw Contours (Outlines)", command=self.apply_contours, **self.btn_style).pack(pady=2)
 
-        # C. SEGMENTATION
-        tk.Label(control_frame, text="4. Segmentation (Threshold)", font=("Arial", 10, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w")
-        self.scale_thresh = tk.Scale(control_frame, from_=0, to=255, orient="horizontal", bg="#2c3e50", fg="white", label="Threshold Value")
-        self.scale_thresh.set(127) # Default
-        self.scale_thresh.pack(fill="x")
-        tk.Button(control_frame, text="Apply Segmentation", command=self.apply_segmentation_roi, **self.btn_style).pack(pady=5)
+        # --- E. PATTERN RECOGNITION ---
+        tk.Label(control_frame, text="e. Pattern Recognition", font=("Arial", 9, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w", pady=(10,0))
+        tk.Button(control_frame, text="Show YOLO Segmentation", command=self.apply_pattern_recognition, bg="#e67e22", fg="white", font=("Arial", 9, "bold"), width=35).pack(pady=5)
 
-        ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=10)
-
-        # D. DETECTION SETTINGS
-        tk.Label(control_frame, text="AI Settings", font=("Arial", 10, "bold"), bg="#2c3e50", fg="#bdc3c7").pack(anchor="w")
-        self.scale_conf = tk.Scale(control_frame, from_=10, to=100, orient="horizontal", bg="#2c3e50", fg="white", label="Confidence %")
-        self.scale_conf.set(25) # Default 25%
-        self.scale_conf.pack(fill="x")
-        tk.Button(control_frame, text="Re-Detect Objects", command=self.force_redetect, bg="#e74c3c", fg="white", font=("Arial", 10, "bold"), pady=5, width=25).pack(pady=5)
-        
         # Reset
-        tk.Button(control_frame, text="Reset Image", command=self.reset_image, bg="#95a5a6", fg="white", width=25).pack(side="bottom", pady=20)
+        tk.Button(control_frame, text="Reset Image", command=self.reset_image, bg="#95a5a6", fg="white", width=35).pack(side="bottom", pady=10)
 
-        # === RIGHT DISPLAY AREA ===
+        # === DISPLAY ===
         display_frame = tk.Frame(self.root, bg="#ecf0f1")
         display_frame.grid(row=0, column=1, sticky="nsew")
-        
-        self.lbl_image = tk.Label(display_frame, text="No Image Loaded", bg="#bdc3c7", fg="#7f8c8d", font=("Arial", 20))
+        self.lbl_image = tk.Label(display_frame, text="Ready", bg="#bdc3c7", font=("Arial", 18))
         self.lbl_image.place(relx=0.5, rely=0.5, anchor="center")
-        
-        self.lbl_status = tk.Label(display_frame, text="System Ready", bg="#34495e", fg="white", anchor="w", padx=10)
+        self.lbl_status = tk.Label(display_frame, text="Idle", bg="#34495e", fg="white", anchor="w", padx=10)
         self.lbl_status.pack(side="bottom", fill="x")
 
-    # --- FUNCTIONS ---
-
-    def load_image(self):
-        path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.png *.jpeg")])
-        if path:
-            self.original_cv_image = cv2.imread(path)
-            self.processed_cv_image = self.original_cv_image.copy()
-            self.detections = None 
-            self.show_image(self.original_cv_image)
-            self.lbl_status.config(text=f"Loaded: {path}")
-
-    def ensure_detections(self):
-        """Run YOLO if detections are missing or if we need to update confidence."""
-        if self.detections is None:
-            self.force_redetect()
-            if len(self.detections) == 0:
-                return False
+    # --- LOGIC ---
+    
+    def ensure_data(self):
+        if self.original_cv_image is None: return False
+        # Run inference if we haven't already
+        if self.current_results is None:
+            self.current_results = self.model(self.original_cv_image, conf=0.25, verbose=False)[0]
         return True
 
-    def force_redetect(self):
-        """Manually runs YOLO with the selected confidence slider."""
+    def apply_enhancement(self):
+        """Standard enhancement applied to the WHOLE image for simplicity."""
         if self.original_cv_image is None: return
+        temp = self.original_cv_image.copy()
+        mode = self.enhance_mode.get()
+        val = self.scale_enhance.get() / 100.0
         
-        conf_val = self.scale_conf.get() / 100.0  # Convert 0-100 to 0.0-1.0
+        if "Sharpening" in mode:
+            kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+            sharp = cv2.filter2D(temp, -1, kernel)
+            temp = cv2.addWeighted(temp, 1.0 - val, sharp, val, 0)
+        elif "Histogram" in mode:
+            yuv = cv2.cvtColor(temp, cv2.COLOR_BGR2YUV)
+            yuv[:,:,0] = cv2.equalizeHist(yuv[:,:,0])
+            temp = cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR)
         
-        self.lbl_status.config(text=f"Detecting objects (Conf: {conf_val})...")
-        self.root.update()
-        
-        results = self.model(self.original_cv_image, conf=conf_val)
-        self.detections = results[0].boxes
-        
-        # Show the raw detections immediately
-        res_plotted = results[0].plot()
-        self.processed_cv_image = res_plotted
-        self.show_image(self.processed_cv_image)
-        self.lbl_status.config(text=f"Detection Complete: {len(self.detections)} objects found.")
+        self.show_image(temp)
+        self.lbl_status.config(text=f"Applied Enhancement: {mode}")
 
-    def apply_enhancement_roi(self):
-        """Blends sharpened image with original based on slider."""
-        if self.original_cv_image is None or not self.ensure_detections(): return
-        
-        temp_img = self.original_cv_image.copy()
-        intensity = self.scale_sharp.get() / 100.0 # 0.0 to 1.0
-        
-        for box in self.detections:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            roi = temp_img[y1:y2, x1:x2]
-            
-            # Create sharpened version
-            kernel = np.array([[0, -1, 0], [-1, 5,-1], [0, -1, 0]])
-            sharpened = cv2.filter2D(roi, -1, kernel)
-            
-            # Blend: output = (1-alpha)*original + alpha*sharpened
-            blended = cv2.addWeighted(roi, 1.0 - intensity, sharpened, intensity, 0)
-            
-            # Draw green box
-            cv2.rectangle(temp_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            temp_img[y1:y2, x1:x2] = blended
-            
-        self.processed_cv_image = temp_img
-        self.show_image(self.processed_cv_image)
-        self.lbl_status.config(text=f"Applied: Sharpening (Intensity: {int(intensity*100)}%)")
+    def apply_shape_color(self):
+        """
+        Fills the EXACT shape of every object with a random color.
+        """
+        if not self.ensure_data(): return
+        if self.current_results.masks is None:
+            messagebox.showinfo("Info", "No objects/shapes detected!")
+            return
 
-    def apply_color_roi(self):
-        """Boosts saturation by slider amount."""
-        if self.original_cv_image is None or not self.ensure_detections(): return
+        temp = self.original_cv_image.copy()
+        opacity = self.scale_color.get() / 100.0
         
-        temp_img = self.original_cv_image.copy()
-        sat_boost = self.scale_color.get()
-        
-        for box in self.detections:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            roi = temp_img[y1:y2, x1:x2]
-            
-            hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-            h, s, v = cv2.split(hsv)
-            
-            # Add saturation with clipping to 255
-            s = cv2.add(s, sat_boost)
-            
-            final_hsv = cv2.merge((h, s, v))
-            processed_roi = cv2.cvtColor(final_hsv, cv2.COLOR_HSV2BGR)
-            
-            cv2.rectangle(temp_img, (x1, y1), (x2, y2), (0, 255, 255), 2)
-            temp_img[y1:y2, x1:x2] = processed_roi
+        # Create a separate layer for the colored masks
+        mask_overlay = temp.copy()
+        random.seed(42)
 
-        self.processed_cv_image = temp_img
-        self.show_image(self.processed_cv_image)
-        self.lbl_status.config(text=f"Applied: Color Saturation (+{sat_boost})")
+        # Iterate over every detected mask
+        # masks.xy is a list of coordinates for the outline of each object
+        for contour in self.current_results.masks.xy:
+            # Generate random color
+            color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            
+            # Convert contour to integer numpy array
+            cnt = np.array(contour, dtype=np.int32)
+            
+            # Fill the exact polygon shape on the overlay layer
+            cv2.fillPoly(mask_overlay, [cnt], color)
 
-    def apply_segmentation_roi(self):
-        """Manual Thresholding based on slider."""
-        if self.original_cv_image is None or not self.ensure_detections(): return
+        # Blend the overlay with the original image
+        final_image = cv2.addWeighted(mask_overlay, opacity, temp, 1 - opacity, 0)
         
-        temp_img = self.original_cv_image.copy()
-        thresh_val = self.scale_thresh.get()
-        
-        for box in self.detections:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            roi = temp_img[y1:y2, x1:x2]
-            
-            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-            
-            # Manual Binary Thresholding using slider value
-            _, mask = cv2.threshold(gray_roi, thresh_val, 255, cv2.THRESH_BINARY)
-            
-            mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-            cv2.rectangle(temp_img, (x1, y1), (x2, y2), (255, 0, 0), 2)
-            temp_img[y1:y2, x1:x2] = mask_bgr
+        self.show_image(final_image)
+        self.lbl_status.config(text="Applied Random Color to Exact Shapes")
 
-        self.processed_cv_image = temp_img
-        self.show_image(self.processed_cv_image)
-        self.lbl_status.config(text=f"Applied: Manual Threshold (Value: {thresh_val})")
+    def apply_mask_isolation(self):
+        """
+        Shows ONLY the shapes of the objects against a black background.
+        """
+        if not self.ensure_data(): return
+        if self.current_results.masks is None: return
+
+        # Start with black image
+        black_bg = np.zeros_like(self.original_cv_image)
+        
+        for i, contour in enumerate(self.current_results.masks.xy):
+            cnt = np.array(contour, dtype=np.int32)
+            # Fill shape with white (or original object pixels)
+            cv2.fillPoly(black_bg, [cnt], (255, 255, 255))
+            
+            # If you want the actual object pixels instead of white:
+            # cv2.fillPoly(mask_layer, [cnt], 255)
+            # res = cv2.bitwise_and(self.original_cv_image, self.original_cv_image, mask=mask_layer)
+        
+        self.show_image(black_bg)
+        self.lbl_status.config(text="Shown Isolated Masks")
+
+    def apply_contours(self):
+        """
+        Draws the outline (contours) of the exact shapes.
+        """
+        if not self.ensure_data(): return
+        if self.current_results.masks is None: return
+
+        temp = self.original_cv_image.copy()
+        
+        for contour in self.current_results.masks.xy:
+            cnt = np.array(contour, dtype=np.int32)
+            # Draw contours: image, contours, contourIdx, color, thickness
+            cv2.drawContours(temp, [cnt], -1, (0, 255, 0), 2)
+            
+        self.show_image(temp)
+        self.lbl_status.config(text="Feature Extraction: Contours Drawn")
+
+    def apply_pattern_recognition(self):
+        """Uses the built-in YOLO plotting which handles masking beautifully."""
+        if not self.ensure_data(): return
+        res_plot = self.current_results.plot(img=self.original_cv_image.copy())
+        self.show_image(res_plot)
+        self.lbl_status.config(text="Full Segmentation Recognition Displayed")
+
+    # --- UTILS ---
+    def load_image(self):
+        path = filedialog.askopenfilename()
+        if path:
+            self.original_cv_image = cv2.imread(path)
+            self.current_results = None # Reset results for new image
+            self.show_image(self.original_cv_image)
+            self.lbl_status.config(text="Image Loaded")
+
+    def toggle_camera(self):
+        if not self.is_camera_on:
+            self.cap = cv2.VideoCapture(0)
+            if self.cap.isOpened():
+                self.is_camera_on = True
+                self.btn_camera.config(text="🛑 Stop Camera", bg="#c0392b")
+                self.update_cam()
+        else:
+            self.is_camera_on = False
+            if self.cap: self.cap.release()
+            self.btn_camera.config(text="📷 Open Camera", bg="#2ecc71")
+
+    def update_cam(self):
+        if self.is_camera_on:
+            ret, frame = self.cap.read()
+            if ret:
+                results = self.model(frame, conf=0.25, verbose=False)
+                # Plotting segmentation on video frame
+                annotated = results[0].plot()
+                self.show_image(annotated)
+                self.root.after(10, self.update_cam)
 
     def reset_image(self):
         if self.original_cv_image is not None:
-            self.processed_cv_image = self.original_cv_image.copy()
-            self.show_image(self.processed_cv_image)
-            self.detections = None
+            self.show_image(self.original_cv_image)
             self.lbl_status.config(text="Image Reset")
 
     def show_image(self, cv_img):
-        rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        im_pil = Image.fromarray(rgb_img)
-        display_w, display_h = 900, 700
-        im_pil.thumbnail((display_w, display_h))
-        imgtk = ImageTk.PhotoImage(image=im_pil)
-        self.lbl_image.configure(image=imgtk, text="")
-        self.lbl_image.image = imgtk
+        rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+        im = Image.fromarray(rgb)
+        im.thumbnail((900, 700))
+        tk_img = ImageTk.PhotoImage(image=im)
+        self.lbl_image.configure(image=tk_img, text="")
+        self.lbl_image.image = tk_img
 
 if __name__ == "__main__":
     root = tk.Tk()
